@@ -555,6 +555,19 @@ unittest
 }
 
 /+
+Determines if a type should be passed by value.
+Returns true if $(D T) is a pointer, class, delegate, function etc.  Otherwise, returns false, i.e. when $(D T) is a struct, array, etc.
++/
+private template isPassByValue(T)
+{
+    enum bool isPassByValue =
+		isPointer!T ||
+		is( T == class ) ||
+		is( T == delegate ) ||
+		is( T == function ) ;
+}
+
+/+
 puts the whole raw element $(D e) into $(D r). doPut will not attempt to
 iterate, slice or transcode $(D e) in any way shape or form. It will $(B only)
 call the correct primitive ($(D r.put(e)),  $(D r.front = e) or
@@ -564,7 +577,39 @@ This can be important when $(D e) needs to be placed in $(D r) unchanged.
 Furthermore, it can be useful when working with $(D InputRange)s, as doPut
 guarantees that no more than a single element will be placed.
 +/
-package void doPut(R, E)(ref R r, auto ref E e)
+package void doPut(R, E)(R r, auto ref E e) if( isPassByValue!R )
+{
+    static if(is(PointerTarget!R == struct))
+        enum usingPut = hasMember!(PointerTarget!R, "put");
+    else
+        enum usingPut = hasMember!(R, "put");
+
+    static if (usingPut)
+    {
+        static assert(is(typeof(r.put(e))),
+            format("Cannot nativaly put a %s into a %s.", E.stringof, R.stringof));
+        r.put(e);
+    }
+    else static if (isInputRange!R)
+    {
+        static assert(is(typeof(r.front = e)),
+            format("Cannot nativaly put a %s into a %s.", E.stringof, R.stringof));
+        r.front = e;
+        r.popFront();
+    }
+    else static if (is(typeof(r(e))))
+    {
+        r(e);
+    }
+    else
+    {
+        import std.string;
+        static assert (false,
+            format("Cannot nativaly put a %s into a %s.", E.stringof, R.stringof));
+    }
+}
+/+ ditto +/
+package void doPut(R, E)(ref R r, auto ref E e) if( !isPassByValue!R )
 {
     static if(is(PointerTarget!R == struct))
         enum usingPut = hasMember!(PointerTarget!R, "put");
@@ -621,6 +666,7 @@ unittest
 
 }
 
+
 /++
 Outputs $(D e) to $(D r). The exact effect is dependent upon the two
 types. Several cases are accepted, as described below. The code snippets
@@ -659,8 +705,64 @@ $(BOOKTABLE ,
 Tip: $(D put) should $(I not) be used "UFCS-style", e.g. $(D r.put(e)).
 Doing this may call $(D R.put) directly, by-passing any transformation
 feature provided by $(D Range.put). $(D put(r, e)) is prefered.
- +/
-void put(R, E)(ref R r, E e)
+ +/ 
+void put(R, E)(R r, E e) if( isPassByValue!R )
+{
+    @property ref E[] EArrayInit(); //@@@9186@@@: Can't use (E[]).init
+
+    //First level: simply straight up put.
+    static if (is(typeof(doPut(r, e))))
+    {
+        doPut(r, e);
+    }
+    //Optional optimization block for straight up array to array copy.
+    else static if (isDynamicArray!R && !isNarrowString!R && isDynamicArray!E && is(typeof(r[] = e[])))
+    {
+        immutable len = e.length;
+        r[0 .. len] = e[];
+        r = r[len .. $];
+    }
+    //Accepts E[] ?
+    else static if (is(typeof(doPut(r, [e]))) && !isDynamicArray!R)
+    {
+        if (__ctfe)
+            doPut(r, [e]);
+        else
+            doPut(r, (&e)[0..1]);
+    }
+    //special case for char to string.
+    else static if (isSomeChar!E && is(typeof(putChar(r, e))))
+    {
+        putChar(r, e);
+    }
+    //Extract each element from the range
+    //We can use "put" here, so we can recursively test a RoR of E.
+    else static if (isInputRange!E && is(typeof(put(r, e.front))))
+    {
+        //Special optimization: If E is a narrow string, and r accepts characters no-wider than the string's
+        //Then simply feed the characters 1 by 1.
+        static if (isNarrowString!E && (
+            (is(E : const  char[]) && is(typeof(doPut(r,  char.max))) && !is(typeof(doPut(r, dchar.max))) && !is(typeof(doPut(r, wchar.max)))) ||
+            (is(E : const wchar[]) && is(typeof(doPut(r, wchar.max))) && !is(typeof(doPut(r, dchar.max)))) ) )
+        {
+            foreach(c; e)
+                doPut(r, c);
+        }
+        else
+        {
+            for (; !e.empty; e.popFront())
+                put(r, e.front);
+        }
+    }
+    else
+    {
+        import std.string;
+        static assert (false, format("Cannot put a %s into a %s.", E.stringof, R.stringof));
+    }
+}
+
+/++ ditto +/
+void put(R, E)(ref R r, E e) if( !isPassByValue!R )
 {
     @property ref E[] EArrayInit(); //@@@9186@@@: Can't use (E[]).init
 
