@@ -3889,3 +3889,103 @@ unittest
     assert(appS.data == "hellow");
     assert(appA.data == "hellow");
 }
+
+struct AppenderRange(T)
+{
+    private Appender!(T[]) appender;
+    void put(T element) { appender.put(element); }
+
+    auto data() inout { return appender.data; }
+    alias data this;
+}
+struct ArrayRange(T)
+{
+    private T[] array;
+    void put(T element) { array ~= element; }
+    auto data() inout { return array; }
+    alias data this;
+}
+struct AssocRange(Key, Value, alias Range = ArrayRange)
+{
+    static struct KeyValue
+    {
+        Key key;
+        Value value;
+    }
+
+    private Range!KeyValue range;
+    private size_t[Key] indexMap;
+
+    auto byKeyValue() inout { return range; }
+    size_t length() const { return indexMap.length; }
+
+    auto opIn(in Key key) inout
+    {
+        auto indexPtr = key in indexMap;
+        return (indexPtr is null) ? null : &range[*indexPtr].value;
+    }
+    ref auto opIndex(in Key key) const
+    {
+        return range[indexMap[key]].value;
+    }
+    void opIndexAssign(Value value, Key key)
+    {
+        import std.range : put;
+        auto existingIndex = key in indexMap;
+        if (existingIndex is null)
+        {
+            indexMap[key] = range.length;
+            put(range, KeyValue(key, value));
+        }
+        else
+            range[*existingIndex].value = value;
+    }
+    enum opApplyBody = q{
+    {
+        int result = 0;
+        foreach (ref member; range)
+        {
+            result = dg(member.key, member.value);
+            if(result)
+                break;
+        }
+        return result;
+    }};
+    //mixin(`int opApply(scope int delegate(Key key, Value value) dg)` ~ opApplyBody);
+    mixin(`int opApply(scope int delegate(Key key, ref Value value) dg)` ~ opApplyBody);
+    //mixin(`int opApply(scope int delegate(ref Key key, Value value) dg)` ~ opApplyBody);
+    //mixin(`int opApply(scope int delegate(ref Key key, ref Value value) dg)` ~ opApplyBody);
+    //mixin(`int opApply(K,V)(scope int delegate(K key, V value) dg)` ~ opApplyBody);
+}
+unittest
+{
+    {
+        auto a = AssocRange!(string,string)();
+        a["foo"] = "bar";
+        assert(a["foo"] == "bar");
+    }
+    {
+        auto a = AssocRange!(int,string)();
+        a[10000] = "x";
+        assert(a[10000] == "x");
+    }
+}
+unittest
+{
+    static struct ArrayWrapper(T)
+    {
+        private T[] array;
+        void put(T element) { array ~= element; }
+
+        auto data() inout { return array; }
+        alias array this;;
+    }
+
+    // test cirular reference
+    static struct Obj
+    {
+        string key;
+        auto value() inout { return this; }
+        AssocRange!(string, Obj) members;
+    }
+}
