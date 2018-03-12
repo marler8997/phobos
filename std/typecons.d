@@ -2333,23 +2333,41 @@ non-null. Calling $(D nullify) can nullify it again.
 
 Practically $(D Nullable!T) stores a $(D T) and a $(D bool).
  */
-struct Nullable(T)
+template Nullable(T)
 {
     static if (is(T == enum))
     {
-             static if (OriginalType!T.min < T.min) private enum nullValue = cast(T) OriginalType!T.min;
-        else static if (OriginalType!T.max > T.max) private enum nullValue = cast(T) OriginalType!T.max;
-        else                                        private enum nullValue = false;
+             static if (OriginalType!T.min < T.min) alias Nullable = Nullable!(T, cast(T) OriginalType!T.min);
+        else static if (OriginalType!T.max > T.max) alias Nullable = Nullable!(T, cast(T) OriginalType!T.max);
+        else                                        alias Nullable = NullableWithExtraField!T;
     }
     else static if (is(T == class) || is(T == interface) || isPointer!T || isDynamicArray!T)
     {
-        private enum nullValue = cast(T) null;
+        /**
+        You can use this version to maintain the old behavior of Nullable.
+        Ths big use case that changes is when a class/interface/pointer/array is initialized
+        with `null`, the `isNull` function would previously return `false` but now returns `true`.
+        */
+        version (Transition_Nullable)
+            alias Nullable = NullableWithExtraField!T;
+        else
+            alias Nullable = Nullable!(T, cast(T) null);
     }
     else
     {
-        private enum nullValue = false;
+        alias Nullable = NullableWithExtraField!T;
     }
-    private enum hasNullValue = !is(typeof(nullValue) == bool);
+    
+}
+
+private struct NullableWithExtraField(T)
+{
+    private enum hasNullValue = false; // force old behavior for Nullable
+    /+
+    version (Transition_Nullable)
+    else
+        private enum hasNullValue = !is(typeof(nullValue) == bool);
+    +/
 
     static if (hasNullValue)
     {
@@ -2533,18 +2551,29 @@ Params:
         }
     }
 
+    private enum isNullMixinCode = q{
 /**
 Check if `this` is in the null state.
 
 Returns:
     true $(B iff) `this` is in the null state, otherwise false.
  */
-    @property bool isNull() const @safe pure nothrow
+        @property bool isNull() const @safe pure nothrow
+        {
+            static if (hasNullValue)
+                return _value is nullValue;
+            else
+                return _isNull;
+        }
+    };
+    version (Transition_Nullable)
     {
-        static if (hasNullValue)
-            return _value is nullValue;
-        else
-            return _isNull;
+        //deprecated("You're using the deprecated version of Nullable.isNull by enabling version 'Transition_Nullable'")
+        mixin(isNullMixinCode);
+    }
+    else
+    {
+        mixin(isNullMixinCode);
     }
 
 ///
@@ -2575,10 +2604,26 @@ Forces $(D this) to the null state.
     void nullify()()
     {
         static if (hasNullValue)
+        {
             _value = nullValue;
+        }
         else
         {
-            .destroy(_value);
+            version (Transition_Nullable)
+            {
+                static if (is(T == class) || is(T == interface))
+                {
+                    _value = null;
+                }
+                else
+                {
+                    .destroy(_value);
+                }
+            }
+            else
+            {
+                .destroy(_value);
+            }
             _isNull = true;
         }
     }
@@ -2624,7 +2669,10 @@ Params:
 
     //Passes
     npi = null;
-    assert(npi.isNull);
+    version (Transition_Nullable)
+        assert(!npi.isNull);
+    else
+        assert(npi.isNull);
 }
 
 /**
@@ -3224,9 +3272,10 @@ Params:
     //Passes
     enum nullVal = cast(int*) 0xCAFEBABE;
     Nullable!(int*, nullVal) npi;
+    static assert(npi.sizeof == nullVal.sizeof);
     assert(npi.isNull);
 
-    //Passes?!
+    //Passes
     npi = null;
     assert(!npi.isNull);
 }
@@ -3744,11 +3793,13 @@ auto nullableRef(T)(T* t)
 @safe unittest
 {
     enum Foo {a, b, c}
-    static assert(Nullable!Foo.sizeof == Foo.sizeof);
+    version (Transition_Nullable) { } else
+        static assert(Nullable!Foo.sizeof == Foo.sizeof);
 
     {
         auto foo = nullable(Foo.a);
-        static assert(foo.sizeof == Foo.sizeof);
+        version (Transition_Nullable) { } else
+            static assert(foo.sizeof == Foo.sizeof);
         assert(!foo.isNull);
         assert(foo == Foo.a);
         assert(foo.get == Foo.a);
@@ -3760,7 +3811,8 @@ auto nullableRef(T)(T* t)
     }
     {
         auto foo = Nullable!Foo.init;
-        static assert(foo.sizeof == Foo.sizeof);
+        version (Transition_Nullable) { } else
+            static assert(foo.sizeof == Foo.sizeof);
         assert(foo.isNull);
         foo = Foo.c;
         assert(!foo.isNull);
@@ -3768,23 +3820,32 @@ auto nullableRef(T)(T* t)
     }
 
     enum Foo2 : int {a = int.min}
-    static assert(Nullable!Foo2.sizeof == Foo2.sizeof);
+    version (Transition_Nullable) { } else
+        static assert(Nullable!Foo2.sizeof == Foo2.sizeof);
 
     enum Foo3 : int {a = int.min, b = int.max}
-    static assert(Nullable!Foo3.sizeof != Foo3.sizeof);
+    version (Transition_Nullable) { } else
+        static assert(Nullable!Foo3.sizeof != Foo3.sizeof);
 }
 @safe unittest
 {
     class FooClass { }
-    static assert(Nullable!FooClass.sizeof == FooClass.sizeof);
     class FooInterface { }
-    static assert(Nullable!FooInterface.sizeof == FooInterface.sizeof);
-
     Nullable!FooClass c = null;
-    assert(c.isNull);
-
     Nullable!FooInterface i = null;
-    assert(i.isNull);
+
+    version (Transition_Nullable)
+    {
+        assert(!c.isNull);
+        assert(!i.isNull);
+    }
+    else
+    {
+        static assert(Nullable!FooClass.sizeof == FooClass.sizeof);
+        static assert(Nullable!FooInterface.sizeof == FooInterface.sizeof);
+        assert(c.isNull);
+        assert(i.isNull);
+    }
 }
 @safe unittest
 {
@@ -3803,10 +3864,17 @@ auto nullableRef(T)(T* t)
 @safe unittest
 {
     Nullable!(int*) ip = null;
-    assert(ip.isNull);
-
     Nullable!(int[]) ia = null;
-    assert(ia.isNull);
+    version (Transition_Nullable)
+    {
+        assert(!ip.isNull);
+        assert(!ia.isNull);
+    }
+    else
+    {
+        assert(ip.isNull);
+        assert(ia.isNull);
+    }
 }
 
 /**

@@ -1,4 +1,4 @@
-`std.typecons.Nullable` will return true for `isNull` on objects initialized with null
+$(RED Breaking Change:) `std.typecons.Nullable` will return true for `isNull` on objects initialized with null
 
 The following behavior for nullable is changed:
 ---
@@ -6,4 +6,4 @@ Nullable!Object n = null;
 assert(!n.isNull); // old behavior
 assert(n.isNull);  // new behavior
 ---
-This applies to classes, interfaces, pointers and dynamic arrays.
+This applies to classes, interfaces, pointers and dynamic arrays. Note that the old behavior can still be used with version `Transiton_Nullable`.
